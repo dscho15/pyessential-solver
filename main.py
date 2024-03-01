@@ -42,7 +42,8 @@ kp2_ = np.array([kp.pt for kp in kp2])
 kp1_ = kp1_[indices[:, 0]]
 kp2_ = kp2_[indices[:, 1]]
 
-F, mask = cv2.findFundamentalMat(kp1_, kp2_, method=cv2.FM_RANSAC, ransacReprojThreshold=1, confidence=0.99999, maxIters=1000000)
+F, mask = cv2.findFundamentalMat(kp1_, kp2_, method=cv2.FM_RANSAC, ransacReprojThreshold=3, confidence=0.9999, maxIters=10000)
+F, _ = cv2.findFundamentalMat(kp1_[mask.flatten() == 1], kp2_[mask.flatten() == 1], method=cv2.FM_LMEDS)
 
 update_matches = [m for m, id in zip(matches, mask) if id != 0]
 
@@ -54,17 +55,44 @@ cv2.imwrite('imgs/matches2.jpg', img4)
 # setup non-liear optization problem of the fundamental matrix
 from scipy.optimize import least_squares
 
+def rotm_x(theta):
+    return np.array([[1, 0, 0], [0, np.cos(theta), -np.sin(theta)], [0, np.sin(theta), np.cos(theta)]])
+
+def rotm_y(theta):
+    return np.array([[np.cos(theta), 0, np.sin(theta)], [0, 1, 0], [-np.sin(theta), 0, np.cos(theta)]])
+
+def convert_fundamental_matrix(F):
+    U, S, Vt = np.linalg.svd(F)
+    S[2] = 0
+    S[1] = S[1] / S[0]
+    S[0] = 1
+    return U, S, Vt.T
+
+U_, S_, V_ = convert_fundamental_matrix(F)
+
+x = np.array(kp1_[mask.flatten() == 1])
+y = np.array(kp2_[mask.flatten() == 1])
+
+# pad with a column of ones
+x = np.hstack([x, np.ones((x.shape[0], 1))])
+y = np.hstack([y, np.ones((y.shape[0], 1))])
+
 # Define the error function
-def error_func(params, x, y):
-    F = params.reshape(3, 3)  # reshape the parameters into a 3x3 matrix
-    x_prime = np.dot(F, x)  # estimate the correspoding points
-    residuals = y - x_prime  # calculate the residuals
+def error_func(params, x, y):    
+    U = U_ @ rotm_x(params[0])
+    V = V_ @ rotm_y(params[1])
+    S = S_[1] + params[2]
+    F = U[:, 0].reshape(3, 1) @ V[:, 0].reshape(1, 3) + S * U[:, 1].reshape(3, 1) @ V[:, 1].reshape(1, 3)
+    
+    F = F / F[2, 2]
+    residuals = np.sum(((F @ x.T).T * y), axis=1)    
+    
     return residuals.ravel()  # return the residuals as a 1D array
 
-def optimize_fundamental_matrix(x, y, F_initial):
-    params_initial = F_initial.ravel()  # flatten the initial fundamental matrix into a 1D array
-    result = least_squares(error_func, params_initial, args=(x, y))  # run the optimization
-    F_optimized = result.x.reshape(3, 3)  # reshape the optimized parameters into a 3x3 matrix
+def optimize_fundamental_matrix(x, y):
+    params_initial = [0, 0, 0]
+    result = least_squares(error_func, params_initial, args=(x, y), loss='cauchy', verbose=True)
+    F_optimized = result.x.reshape(3, )
     return F_optimized
 
-
+optimize_fundamental_matrix(x, y)
